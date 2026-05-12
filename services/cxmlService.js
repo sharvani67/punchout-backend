@@ -7,25 +7,29 @@ const generatePunchoutSetupResponse = (sessionId) => {
   </PunchoutSetupResponse>
   `;
 };
+const generatePunchoutOrderMessage = (buyerCookie, cart) => {
+  const itemsXML = cart
+    .map(
+      (item) => `
+    <ItemIn quantity="1">
+      <ItemID>
+        <SupplierPartID>${item.id}</SupplierPartID>
+      </ItemID>
+      <ItemDetail>
+        <UnitPrice>
+          <Money currency="INR">${item.price}</Money>
+        </UnitPrice>
+        <Description>${item.name}</Description>
+      </ItemDetail>
+    </ItemIn>
+  `
+    )
+    .join("");
 
-const generatePunchoutOrderMessage = (buyerCookie) => {
   return `
   <PunchoutOrderMessage>
     <BuyerCookie>${buyerCookie}</BuyerCookie>
-
-    <ItemIn quantity="1">
-      <ItemID>
-        <SupplierPartID>101</SupplierPartID>
-      </ItemID>
-
-      <ItemDetail>
-        <UnitPrice>
-          <Money currency="USD">100</Money>
-        </UnitPrice>
-        <Description>Laptop Bag</Description>
-      </ItemDetail>
-    </ItemIn>
-
+    ${itemsXML}
   </PunchoutOrderMessage>
   `;
 };

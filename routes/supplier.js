@@ -4,45 +4,99 @@ const {
   generatePunchoutSetupResponse,
   generatePunchoutOrderMessage,
 } = require("../services/cxmlService");
+const db = require("../db");
+const xml2js = require("xml2js");
 
 const router = express.Router();
 
-// In-memory storage (no DB for now)
-let sessions = {};
-
-// 🔹 Punchout Setup
 router.post("/punchout/setup", (req, res) => {
-  console.log("Received PunchoutSetupRequest");
+  const xml = req.body;
 
-  const buyerCookie = "BUYER123"; // static for now
+  xml2js.parseString(xml, (err, result) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).send("Invalid XML");
+    }
 
-  const sessionId = uuidv4();
+    const buyerId =
+      result.PunchoutSetupRequest.BuyerCookie[0];
 
-  sessions[sessionId] = {
-    buyerCookie,
-  };
+    const sessionId = uuidv4();
 
-  const responseXML = generatePunchoutSetupResponse(sessionId);
+    // ✅ STORE SESSION PROPERLY
+    db.query(
+      "INSERT INTO sessions (id, buyer_id, buyer_cookie, created_at, status) VALUES (?, ?, ?, NOW(), ?)",
+      [sessionId, buyerId, buyerId, "ACTIVE"],
+      (err) => {
+        if (err) {
+          console.error("❌ Session insert failed:", err);
+          return res.status(500).send("DB Error");
+        }
 
-  res.send(responseXML);
+        console.log("✅ Session Stored:", sessionId);
+
+        const responseXML =
+          generatePunchoutSetupResponse(sessionId);
+
+        res.send(responseXML);
+      }
+    );
+  });
 });
 
 // 🔹 Checkout (send cart back)
 router.post("/checkout", (req, res) => {
-  const { sessionId } = req.body;
+  const { sessionId, cart } = req.body;
 
-  const session = sessions[sessionId];
-
-  if (!session) {
-    return res.status(400).json({ error: "Invalid session" });
+  if (!sessionId || !cart) {
+    return res.status(400).json({ error: "Missing data" });
   }
 
-  const xml = generatePunchoutOrderMessage(session.buyerCookie);
+  // ✅ Check session exists
+  db.query(
+    "SELECT * FROM sessions WHERE id = ?",
+    [sessionId],
+    (err, results) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).send("DB Error");
+      }
 
-  res.json({
-    redirectUrl: "http://localhost:3000/requisition",
-    cxml: xml,
-  });
+      if (results.length === 0) {
+        return res.status(400).json({ error: "Invalid session" });
+      }
+
+      const session = results[0];
+
+      // ✅ STORE EACH CART ITEM
+      cart.forEach((item) => {
+        db.query(
+          "INSERT INTO cart_items (session_id, product_name, price, quantity) VALUES (?, ?, ?, ?)",
+          [sessionId, item.name, item.price, item.qty || 1],
+          (err) => {
+            if (err) console.error("Cart insert error:", err);
+          }
+        );
+      });
+
+      // ✅ UPDATE SESSION LAST ACTIVE
+      db.query(
+        "UPDATE sessions SET last_active = NOW() WHERE id = ?",
+        [sessionId]
+      );
+
+      console.log("🛒 Cart Stored in DB");
+
+      const xml = generatePunchoutOrderMessage(
+        session.buyer_cookie,
+        cart
+      );
+
+      res.json({
+        redirectUrl: `http://localhost:3000/requisition?sessionId=${sessionId}`,
+        cxml: xml,
+      });
+    }
+  );
 });
-
 module.exports = router;
