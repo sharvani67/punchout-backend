@@ -12,18 +12,16 @@ const router = express.Router();
 router.post("/punchout/setup", (req, res) => {
   const xml = req.body;
 
-  xml2js.parseString(xml, (err, result) => {
+  xml2js.parseString(xml, async (err, result) => {
     if (err) {
       console.error(err);
       return res.status(500).send("Invalid XML");
     }
 
-    const buyerId =
-      result.PunchoutSetupRequest.BuyerCookie[0];
-
+    const buyerId = result.PunchoutSetupRequest.BuyerCookie[0];
     const sessionId = uuidv4();
 
-    // ✅ STORE SESSION PROPERLY
+    // ✅ 1. Insert into sessions table
     db.query(
       "INSERT INTO sessions (id, buyer_id, buyer_cookie, created_at, status) VALUES (?, ?, ?, NOW(), ?)",
       [sessionId, buyerId, buyerId, "ACTIVE"],
@@ -35,10 +33,21 @@ router.post("/punchout/setup", (req, res) => {
 
         console.log("✅ Session Stored:", sessionId);
 
-        const responseXML =
-          generatePunchoutSetupResponse(sessionId);
+        // ✅ 2. Insert into session_activity table
+        db.query(
+  "INSERT INTO session_activity (session_id, action, created_at) VALUES (?, ?, NOW())",
+  [sessionId, "SESSION_STARTED"],
+  (err) => {
+    if (err) {
+      console.error("❌ Activity insert failed:", err);
+    } else {
+      console.log("✅ Session activity stored");
+    }
 
-        res.send(responseXML);
+    const responseXML = generatePunchoutSetupResponse(sessionId);
+    res.send(responseXML);
+  }
+);
       }
     );
   });
@@ -78,6 +87,15 @@ router.post("/checkout", (req, res) => {
           }
         );
       });
+
+      // ✅ After storing cart
+db.query(
+  "INSERT INTO session_activity (session_id, action, created_at) VALUES (?, ?, NOW())",
+  [sessionId, "CART_CHECKOUT"],
+  (err) => {
+    if (err) console.error("Activity log error:", err);
+  }
+);
 
       // ✅ UPDATE SESSION LAST ACTIVE
       db.query(

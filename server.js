@@ -4,6 +4,7 @@ const bodyParser = require("body-parser");
 
 const buyerRoutes = require("./routes/buyer");
 const supplierRoutes = require("./routes/supplier");
+const supplieradminRoutes = require("./routes/supplieradmin");
 
 const app = express();
 
@@ -13,6 +14,7 @@ app.use(bodyParser.text({ type: "text/xml" }));
 
 app.use("/api/buyer", buyerRoutes);
 app.use("/api/supplier", supplierRoutes);
+app.use("/api", supplieradminRoutes);
 
 const PORT = 5000;
 
