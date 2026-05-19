@@ -17,7 +17,7 @@ router.post("/login", (req, res) => {
     (err, results) => {
       if (err) return res.status(500).json(err);
 
-      // 🔹 If user exists → validate secret
+      // 🔹 EXISTING USER
       if (results.length > 0) {
         const user = results[0];
 
@@ -28,19 +28,23 @@ router.post("/login", (req, res) => {
         return res.json({
           message: "Login successful",
           buyerId: user.id,
+          orgId: user.org_id, // ✅ ADD THIS
         });
       }
 
-      // 🔹 If new user → create
+      // 🔹 NEW USER → Assign default org (IMPORTANT)
+      const defaultOrgId = 1; // 👉 TCS (you can change later dynamically)
+
       db.query(
-        "INSERT INTO buyers (email, secret_code) VALUES (?, ?)",
-        [email, secret],
+        "INSERT INTO buyers (email, secret_code, org_id) VALUES (?, ?, ?)",
+        [email, secret, defaultOrgId],
         (err, result) => {
           if (err) return res.status(500).json(err);
 
           res.json({
             message: "User created & logged in",
             buyerId: result.insertId,
+            orgId: defaultOrgId, // ✅ RETURN THIS
           });
         }
       );
@@ -51,35 +55,86 @@ router.post("/login", (req, res) => {
 // 🔹 Start Punchout
 router.post("/punchout/start", async (req, res) => {
   try {
-    const buyerId = req.headers["buyer-id"]; // ✅ get buyerId
+    const buyerId = req.headers["buyer-id"];
+    const orgId = req.headers["org-id"];
+    const buyerEmail = req.headers["buyer-email"];
+    const { supplier } = req.body;
 
-    const punchoutRequest = `
-    <PunchoutSetupRequest>
-      <BuyerCookie>${buyerId}</BuyerCookie>
-    </PunchoutSetupRequest>
-    `;
+    // ✅ 1. Get org credentials
+    db.query(
+      "SELECT * FROM buyer_organizations WHERE id = ?",
+      [orgId],
+      async (err, results) => {
+        if (err || results.length === 0) {
+          return res.status(400).json({ error: "Invalid organization" });
+        }
 
-    const response = await axios.post(
-  "http://localhost:5000/api/supplier/punchout/setup",
-  punchoutRequest,
-  {
-    headers: { 
-      "Content-Type": "text/xml",
-      "buyer-id": buyerId, // ✅ ADD THIS
-    },
-  }
-);
+        const org = results[0];
 
-    xml2js.parseString(response.data, (err, result) => {
-      const url =
-        result.PunchoutSetupResponse.StartPage[0].URL[0];
+        // ✅ 2. Build REAL cXML
+        const punchoutRequest = `
+<cXML payloadID="${Date.now()}" timestamp="${new Date().toISOString()}">
+  <Header>
+    <From>
+      <Credential domain="NetworkID">
+        <Identity>${org.identity}</Identity>
+      </Credential>
+    </From>
 
-      res.json({ redirectUrl: url });
-    });
+    <To>
+      <Credential domain="NetworkID">
+        <Identity>${supplier}_SUPPLIER</Identity>
+      </Credential>
+    </To>
 
+    <Sender>
+      <Credential domain="NetworkID">
+        <Identity>${org.identity}</Identity>
+        <SharedSecret>${org.shared_secret}</SharedSecret>
+      </Credential>
+      <UserAgent>MyPunchoutApp</UserAgent>
+    </Sender>
+  </Header>
+
+  <Request>
+    <PunchOutSetupRequest operation="create">
+      <BuyerCookie>${buyerId}_${Date.now()}</BuyerCookie>
+
+      <BrowserFormPost>
+        <URL>http://localhost:5000/api/buyer/cart/receive</URL>
+      </BrowserFormPost>
+
+      <Contact role="endUser">
+  <Name xml:lang="en">${org.name}</Name>
+  <Email>${buyerEmail}</Email> <!-- ✅ REAL EMAIL -->
+</Contact>
+    </PunchOutSetupRequest>
+  </Request>
+</cXML>
+`;
+
+        // ✅ 3. Send to supplier
+        const response = await axios.post(
+          "http://localhost:5000/api/supplier/punchout/setup",
+          punchoutRequest,
+          {
+            headers: {
+              "Content-Type": "text/xml",
+            },
+          }
+        );
+
+        xml2js.parseString(response.data, (err, result) => {
+          const url =
+            result.PunchoutSetupResponse.StartPage[0].URL[0];
+
+          res.json({ redirectUrl: url });
+        });
+      }
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).send("Error in Punchout");
+    res.status(500).send("Punchout error");
   }
 });
 

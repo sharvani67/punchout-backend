@@ -12,44 +12,57 @@ const router = express.Router();
 router.post("/punchout/setup", (req, res) => {
   const xml = req.body;
 
-  xml2js.parseString(xml, async (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).send("Invalid XML");
-    }
+  xml2js.parseString(xml, (err, result) => {
+    if (err) return res.status(500).send("Invalid XML");
 
-    const buyerId = result.PunchoutSetupRequest.BuyerCookie[0];
-    const sessionId = uuidv4();
+    try {
+      const header = result.cXML.Header[0];
+      const sender = header.Sender[0].Credential[0];
 
-    // ✅ 1. Insert into sessions table
-    db.query(
-      "INSERT INTO sessions (id, buyer_id, buyer_cookie, created_at, status) VALUES (?, ?, ?, NOW(), ?)",
-      [sessionId, buyerId, buyerId, "ACTIVE"],
-      (err) => {
-        if (err) {
-          console.error("❌ Session insert failed:", err);
-          return res.status(500).send("DB Error");
-        }
+      const identity = sender.Identity[0];
+      const sharedSecret = sender.SharedSecret[0];
 
-        console.log("✅ Session Stored:", sessionId);
+      const contact = result.cXML.Request[0].PunchOutSetupRequest[0].Contact[0];
+      const buyerEmail = contact.Email[0];
 
-        // ✅ 2. Insert into session_activity table
-        db.query(
-  "INSERT INTO session_activity (session_id, action, created_at) VALUES (?, ?, NOW())",
-  [sessionId, "SESSION_STARTED"],
-  (err) => {
-    if (err) {
-      console.error("❌ Activity insert failed:", err);
-    } else {
-      console.log("✅ Session activity stored");
-    }
+      // ✅ VALIDATE BUYER
+      db.query(
+        "SELECT * FROM buyer_organizations WHERE identity=? AND shared_secret=?",
+        [identity, sharedSecret],
+        (err, results) => {
+          if (err || results.length === 0) {
+            return res.status(401).send("Unauthorized ❌");
+          }
 
-    const responseXML = generatePunchoutSetupResponse(sessionId);
-    res.send(responseXML);
-  }
+          // ✅ Extract request
+          const request =
+            result.cXML.Request[0].PunchOutSetupRequest[0];
+
+          const buyerCookie = request.BuyerCookie[0];
+          const sessionId = uuidv4();
+
+          // ✅ Store session
+         db.query(
+  "INSERT INTO sessions (id, buyer_id, buyer_cookie, buyer_email, created_at, status) VALUES (?, ?, ?, ?, NOW(), ?)",
+  [sessionId, identity, buyerCookie, buyerEmail, "ACTIVE"]
 );
-      }
-    );
+
+          // ✅ Log activity
+          db.query(
+            "INSERT INTO session_activity (session_id, action, created_at) VALUES (?, ?, NOW())",
+            [sessionId, "SESSION_STARTED"]
+          );
+
+          const responseXML =
+            generatePunchoutSetupResponse(sessionId);
+
+          res.send(responseXML);
+        }
+      );
+    } catch (err) {
+      console.error(err);
+      res.status(500).send("Processing error");
+    }
   });
 });
 
